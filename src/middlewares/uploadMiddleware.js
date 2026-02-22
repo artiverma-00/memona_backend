@@ -1,15 +1,20 @@
 const multer = require("multer");
 
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+const ALLOWED_PREFIXES = ["image/", "video/", "audio/"];
 
 const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
-  const isImage = file.mimetype.startsWith("image/");
-  const isVideo = file.mimetype.startsWith("video/");
+  const mimeType = String(file?.mimetype || "").toLowerCase();
+  const isAllowed = ALLOWED_PREFIXES.some((prefix) =>
+    mimeType.startsWith(prefix),
+  );
 
-  if (!isImage && !isVideo) {
-    const error = new Error("Only image and video files are allowed");
+  if (!isAllowed) {
+    const error = new Error(
+      "Invalid file type. Only image, video, or audio files are allowed",
+    );
     error.statusCode = 400;
     cb(error);
     return;
@@ -26,9 +31,9 @@ const uploader = multer({
   fileFilter,
 });
 
-const handleSingleUpload = (fieldName) => uploader.single(fieldName);
+const uploadMiddleware = uploader.single("file");
 
 module.exports = {
-  handleSingleUpload,
+  uploadMiddleware,
   MAX_FILE_SIZE_BYTES,
 };

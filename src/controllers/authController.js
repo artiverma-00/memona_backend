@@ -30,10 +30,10 @@ const validateCredentials = (email, password, options = {}) => {
   }
 };
 
-const getProfileRole = async (userId) => {
+const getProfileData = async (userId) => {
   const { data, error } = await supabase
     .from("profiles")
-    .select("role")
+    .select("role, full_name")
     .eq("id", userId)
     .maybeSingle();
 
@@ -41,14 +41,20 @@ const getProfileRole = async (userId) => {
     throw createHttpError(500, error.message);
   }
 
-  return data?.role === "admin" ? "admin" : "user";
+  return {
+    role: data?.role === "admin" ? "admin" : "user",
+    full_name: data?.full_name || null,
+  };
 };
 
-const buildUserPayload = (user, role) => ({
+const buildUserPayload = (user, role, options = {}) => ({
   id: user?.id,
   email: user?.email,
   role,
-  full_name: user?.user_metadata?.full_name || null,
+  full_name:
+    options.full_name || user?.user_metadata?.full_name || user?.email || null,
+  bio: user?.user_metadata?.bio || "",
+  avatar_url: user?.user_metadata?.avatar_url || "",
 });
 
 const isRateLimitError = (message) =>
@@ -238,8 +244,12 @@ const login = asyncHandler(async (req, res) => {
     throw createHttpError(401, "Invalid credentials");
   }
 
-  const role = data?.user?.id ? await getProfileRole(data.user.id) : "user";
-  const userWithRole = buildUserPayload(data.user, role);
+  const profileData = data?.user?.id
+    ? await getProfileData(data.user.id)
+    : { role: "user", full_name: null };
+  const userWithRole = buildUserPayload(data.user, profileData.role, {
+    full_name: profileData.full_name,
+  });
 
   return sendSuccess(res, 200, {
     user: userWithRole,
@@ -250,14 +260,119 @@ const login = asyncHandler(async (req, res) => {
 });
 
 const me = asyncHandler(async (req, res) => {
-  const role = await getProfileRole(req.user.id);
-  const userWithRole = buildUserPayload(req.user, role);
+  const profileData = await getProfileData(req.user.id);
+  const userWithRole = buildUserPayload(req.user, profileData.role, {
+    full_name: profileData.full_name,
+  });
 
   return sendSuccess(res, 200, { user: userWithRole });
+});
+
+const updateProfile = asyncHandler(async (req, res) => {
+  const adminClient = createSupabaseAdminClient();
+
+  const fullName = String(req.body.full_name || req.body.name || "").trim();
+  const bio = String(req.body.bio || "").trim();
+  const avatarUrl = String(req.body.avatar_url || "").trim();
+
+  if (!fullName) {
+    throw createHttpError(400, "Full name is required");
+  }
+
+  const { error: profileError } = await adminClient.from("profiles").upsert(
+    {
+      id: req.user.id,
+      full_name: fullName,
+    },
+    { onConflict: "id" },
+  );
+
+  if (profileError) {
+    throw createHttpError(500, profileError.message);
+  }
+
+  const mergedMetadata = {
+    ...(req.user.user_metadata || {}),
+    full_name: fullName,
+    bio,
+    avatar_url: avatarUrl,
+  };
+
+  const { data: updatedAuthData, error: authUpdateError } =
+    await adminClient.auth.admin.updateUserById(req.user.id, {
+      user_metadata: mergedMetadata,
+    });
+
+  if (authUpdateError) {
+    throw createHttpError(500, authUpdateError.message);
+  }
+
+  const profileData = await getProfileData(req.user.id);
+  const userWithRole = buildUserPayload(
+    updatedAuthData?.user || req.user,
+    profileData.role,
+    {
+      full_name: profileData.full_name || fullName,
+    },
+  );
+
+  return sendSuccess(res, 200, { user: userWithRole });
+});
+
+const changePassword = asyncHandler(async (req, res) => {
+  const adminClient = createSupabaseAdminClient();
+  const anonClient = createSupabaseAnonClient();
+
+  const currentPassword = String(req.body.current_password || "");
+  const newPassword = String(req.body.new_password || "");
+
+  if (!currentPassword || !newPassword) {
+    throw createHttpError(
+      400,
+      "Current password and new password are required",
+    );
+  }
+
+  if (newPassword.length < 6) {
+    throw createHttpError(400, "Password must be at least 6 characters");
+  }
+
+  if (currentPassword === newPassword) {
+    throw createHttpError(
+      400,
+      "New password must be different from current password",
+    );
+  }
+
+  const { error: verifyError } = await anonClient.auth.signInWithPassword({
+    email: req.user.email,
+    password: currentPassword,
+  });
+
+  if (verifyError) {
+    throw createHttpError(400, "Current password is incorrect");
+  }
+
+  const { error: updateError } = await adminClient.auth.admin.updateUserById(
+    req.user.id,
+    {
+      password: newPassword,
+    },
+  );
+
+  if (updateError) {
+    throw createHttpError(500, updateError.message);
+  }
+
+  return sendSuccess(res, 200, {
+    message: "Password updated successfully",
+  });
 });
 
 module.exports = {
   register,
   login,
   me,
+  updateProfile,
+  changePassword,
 };

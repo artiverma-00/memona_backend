@@ -6,7 +6,9 @@ const TABLE_NAME = "memories";
 const listMemoriesByUser = async (userId) => {
   const { data, error } = await supabase
     .from(TABLE_NAME)
-    .select("*")
+    .select(
+      "*, media_file:media_files!memories_media_id_fkey(secure_url, resource_type)",
+    )
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
 
@@ -20,7 +22,9 @@ const listMemoriesByUser = async (userId) => {
 const getMemoryById = async (userId, memoryId) => {
   const { data, error } = await supabase
     .from(TABLE_NAME)
-    .select("*")
+    .select(
+      "*, media_file:media_files!memories_media_id_fkey(secure_url, resource_type)",
+    )
     .eq("id", memoryId)
     .eq("user_id", userId)
     .single();

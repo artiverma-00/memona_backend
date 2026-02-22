@@ -1,4 +1,6 @@
 const memoryService = require("../services/memoryService");
+const supabase = require("../config/supabaseClient");
+const { uploadToCloudinary } = require("../services/uploadService");
 const {
   asyncHandler,
   createHttpError,
@@ -45,9 +47,31 @@ const parseBoolean = (value, fallback = false) => {
   return fallback;
 };
 
+const resolveMedia = (memory) => {
+  const relation = memory.media_file || memory.media_files || null;
+  if (!relation) {
+    return {
+      mediaUrl: memory.media_url || null,
+      mediaType: memory.media_type || null,
+    };
+  }
+
+  const item = Array.isArray(relation) ? relation[0] : relation;
+  return {
+    mediaUrl: item?.secure_url || memory.media_url || null,
+    mediaType: item?.resource_type || memory.media_type || null,
+  };
+};
+
 const getMemories = asyncHandler(async (req, res) => {
   const memories = await memoryService.listMemoriesByUser(req.user.id);
-  return sendSuccess(res, 200, memories);
+  const normalized = memories.map((memory) => ({
+    ...memory,
+    media_url: resolveMedia(memory).mediaUrl,
+    media_type: resolveMedia(memory).mediaType,
+  }));
+
+  return sendSuccess(res, 200, normalized);
 });
 
 const getMemoryById = asyncHandler(async (req, res) => {
@@ -58,7 +82,11 @@ const getMemoryById = asyncHandler(async (req, res) => {
     throw createHttpError(404, "Memory not found");
   }
 
-  return sendSuccess(res, 200, memory);
+  return sendSuccess(res, 200, {
+    ...memory,
+    media_url: resolveMedia(memory).mediaUrl,
+    media_type: resolveMedia(memory).mediaType,
+  });
 });
 
 const createMemory = asyncHandler(async (req, res) => {
@@ -81,6 +109,43 @@ const createMemory = asyncHandler(async (req, res) => {
     payload.media_id = req.body.media_id
       ? parseUuid(req.body.media_id, "media_id")
       : null;
+  }
+
+  if (req.file) {
+    const mediaResourceType = String(req.file.mimetype || "")
+      .toLowerCase()
+      .startsWith("image/")
+      ? "image"
+      : String(req.file.mimetype || "")
+            .toLowerCase()
+            .startsWith("audio/")
+        ? "audio"
+        : "video";
+
+    const uploadedMedia = await uploadToCloudinary(
+      req.file.buffer,
+      req.file.mimetype,
+    );
+
+    const { data: mediaRow, error: mediaInsertError } = await supabase
+      .from("media_files")
+      .insert({
+        user_id: req.user.id,
+        public_id: uploadedMedia.public_id,
+        secure_url: uploadedMedia.secure_url,
+        resource_type: mediaResourceType,
+        format: uploadedMedia.format,
+        bytes: uploadedMedia.bytes,
+        duration: uploadedMedia.duration,
+      })
+      .select("id, secure_url")
+      .single();
+
+    if (mediaInsertError) {
+      throw createHttpError(500, mediaInsertError.message);
+    }
+
+    payload.media_id = mediaRow.id;
   }
 
   if (req.body.voice_note_id !== undefined) {
@@ -112,7 +177,40 @@ const createMemory = asyncHandler(async (req, res) => {
   }
 
   const created = await memoryService.createMemory(payload);
-  return sendSuccess(res, 201, created);
+
+  let mediaUrl = null;
+  if (payload.media_id) {
+    const { data: mediaFile, error: mediaLookupError } = await supabase
+      .from("media_files")
+      .select("secure_url")
+      .eq("id", payload.media_id)
+      .single();
+
+    if (mediaLookupError && mediaLookupError.code !== "PGRST116") {
+      throw createHttpError(500, mediaLookupError.message);
+    }
+
+    mediaUrl = mediaFile?.secure_url || null;
+  }
+
+  return sendSuccess(res, 201, {
+    id: created.id,
+    title: created.title,
+    description: created.description || payload.description || null,
+    media_url: mediaUrl,
+    media_type: req.file
+      ? String(req.file.mimetype || "")
+          .toLowerCase()
+          .startsWith("image/")
+        ? "image"
+        : String(req.file.mimetype || "")
+              .toLowerCase()
+              .startsWith("audio/")
+          ? "audio"
+          : "video"
+      : null,
+    created_at: created.created_at,
+  });
 });
 
 const updateMemory = asyncHandler(async (req, res) => {

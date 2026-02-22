@@ -1,5 +1,6 @@
 const express = require("express");
 const authMiddleware = require("../middlewares/authMiddleware");
+const { uploadMiddleware } = require("../middlewares/uploadMiddleware");
 const {
   getMemories,
   getMemoryById,
@@ -10,12 +11,10 @@ const {
 
 const router = express.Router();
 
-router.use(authMiddleware);
-
-router.get("/", getMemories);
-router.get("/:id", getMemoryById);
-router.post("/", createMemory);
-router.put("/:id", updateMemory);
-router.delete("/:id", deleteMemory);
+router.get("/", authMiddleware, getMemories);
+router.get("/:id", authMiddleware, getMemoryById);
+router.post("/", authMiddleware, uploadMiddleware, createMemory);
+router.put("/:id", authMiddleware, updateMemory);
+router.delete("/:id", authMiddleware, deleteMemory);
 
 module.exports = router;
