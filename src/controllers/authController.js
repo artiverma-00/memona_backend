@@ -1,4 +1,8 @@
 const supabase = require("../config/supabaseClient");
+const {
+  createSupabaseAdminClient,
+  createSupabaseAnonClient,
+} = require("../config/supabaseClient");
 const env = require("../config/env");
 const {
   asyncHandler,
@@ -86,6 +90,9 @@ const authUserExistsByEmail = async (email) => {
 };
 
 const register = asyncHandler(async (req, res) => {
+  const authClient = createSupabaseAnonClient();
+  const adminClient = createSupabaseAdminClient();
+
   const email = String(req.body.email || "")
     .trim()
     .toLowerCase();
@@ -114,7 +121,7 @@ const register = asyncHandler(async (req, res) => {
   let signUpData = null;
   let signUpError = null;
 
-  const { data, error } = await supabase.auth.signUp({
+  const { data, error } = await authClient.auth.signUp({
     email,
     password,
     options: {
@@ -130,7 +137,7 @@ const register = asyncHandler(async (req, res) => {
   // Dev-friendly fallback: create confirmed user when signup email rate limit is hit.
   if (signUpError && isRateLimitError(signUpError.message)) {
     const { data: adminData, error: adminError } =
-      await supabase.auth.admin.createUser({
+      await adminClient.auth.admin.createUser({
         email,
         password,
         email_confirm: true,
@@ -155,7 +162,7 @@ const register = asyncHandler(async (req, res) => {
   }
 
   if (signUpData?.user?.id) {
-    const { error: profileError } = await supabase.from("profiles").upsert(
+    const { error: profileError } = await adminClient.from("profiles").upsert(
       {
         id: signUpData.user.id,
         full_name: fullName,
@@ -173,7 +180,7 @@ const register = asyncHandler(async (req, res) => {
   let session = signUpData?.session || null;
   if (!session) {
     const { data: loginData, error: loginError } =
-      await supabase.auth.signInWithPassword({
+      await authClient.auth.signInWithPassword({
         email,
         password,
       });
@@ -194,6 +201,8 @@ const register = asyncHandler(async (req, res) => {
 });
 
 const login = asyncHandler(async (req, res) => {
+  const authClient = createSupabaseAnonClient();
+
   const email = String(req.body.email || "")
     .trim()
     .toLowerCase();
@@ -201,7 +210,7 @@ const login = asyncHandler(async (req, res) => {
 
   validateCredentials(email, password);
 
-  const { data, error } = await supabase.auth.signInWithPassword({
+  const { data, error } = await authClient.auth.signInWithPassword({
     email,
     password,
   });

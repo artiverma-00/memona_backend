@@ -24,6 +24,7 @@ const env = {
   port: Number(process.env.PORT || 5000),
   adminSignupKey: normalizeEnvValue(process.env.ADMIN_SIGNUP_KEY),
   supabaseUrl: normalizeEnvValue(process.env.SUPABASE_URL),
+  supabaseAnonKey: normalizeEnvValue(process.env.SUPABASE_ANON_KEY),
   supabaseServiceRoleKey:
     normalizeEnvValue(process.env.SUPABASE_SERVICE_ROLE_KEY) ||
     normalizeEnvValue(process.env.SUPABASE_SERVICE_ROLE),
