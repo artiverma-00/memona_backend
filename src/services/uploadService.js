@@ -8,6 +8,7 @@ const resolveResourceType = (input) => {
     return "image";
   }
 
+  // Cloudinary uses 'video' resource type for both video AND audio files
   if (
     value.startsWith("video/") ||
     value.startsWith("audio/") ||
@@ -17,7 +18,7 @@ const resolveResourceType = (input) => {
     return "video";
   }
 
-  throw createHttpError(400, "Unsupported file type");
+  throw createHttpError(400, "Unsupported file type: " + value);
 };
 
 const uploadToCloudinary = async (fileBuffer, resourceType) => {
@@ -29,13 +30,17 @@ const uploadToCloudinary = async (fileBuffer, resourceType) => {
 
   try {
     const result = await new Promise((resolve, reject) => {
+      let timeoutHandle;
+
       const stream = cloudinary.uploader.upload_stream(
         {
           folder: "memona",
           resource_type: cloudinaryResourceType,
           overwrite: false,
+          timeout: 300000, // 5 minutes for large uploads
         },
         (error, uploadedFile) => {
+          clearTimeout(timeoutHandle);
           if (error) {
             reject(error);
             return;
@@ -44,6 +49,23 @@ const uploadToCloudinary = async (fileBuffer, resourceType) => {
         },
       );
 
+      // Fallback timeout (15 minutes total)
+      timeoutHandle = setTimeout(() => {
+        console.error(`[UPLOAD] Timeout - taking too long`);
+        stream.destroy();
+        reject(new Error("Upload timeout - file took too long to upload"));
+      }, 900000);
+
+      stream.on("error", (error) => {
+        clearTimeout(timeoutHandle);
+        console.error(`[UPLOAD] Stream error:`, error.message);
+        reject(error);
+      });
+
+      const fileSizeMB = fileBuffer.length / (1024 * 1024);
+      console.log(
+        `[UPLOAD] Uploading ${fileSizeMB.toFixed(2)}MB (${cloudinaryResourceType})...`,
+      );
       stream.end(fileBuffer);
     });
 
@@ -55,7 +77,9 @@ const uploadToCloudinary = async (fileBuffer, resourceType) => {
       duration: typeof result.duration === "number" ? result.duration : null,
     };
   } catch (error) {
-    throw createHttpError(502, "Failed to upload file");
+    const errorMsg = error.message || "Unknown error";
+    console.error(`[UPLOAD] Error: ${errorMsg}`);
+    throw createHttpError(502, "Failed to upload file: " + errorMsg);
   }
 };
 

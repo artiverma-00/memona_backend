@@ -69,6 +69,7 @@ const getMemories = asyncHandler(async (req, res) => {
     ...memory,
     media_url: resolveMedia(memory).mediaUrl,
     media_type: resolveMedia(memory).mediaType,
+    album_id: memory.album_memories?.[0]?.album_id || null,
   }));
 
   return sendSuccess(res, 200, normalized);
@@ -86,6 +87,7 @@ const getMemoryById = asyncHandler(async (req, res) => {
     ...memory,
     media_url: resolveMedia(memory).mediaUrl,
     media_type: resolveMedia(memory).mediaType,
+    album_id: memory.album_memories?.[0]?.album_id || null,
   });
 });
 
@@ -112,6 +114,11 @@ const createMemory = asyncHandler(async (req, res) => {
   }
 
   if (req.file) {
+    const fileSizeMB = req.file.size / (1024 * 1024);
+    console.log(
+      `[MEMORY-CREATE] File: ${req.file.originalname}, size: ${fileSizeMB.toFixed(2)}MB, type: ${req.file.mimetype}`,
+    );
+
     const mediaResourceType = String(req.file.mimetype || "")
       .toLowerCase()
       .startsWith("image/")
@@ -126,6 +133,8 @@ const createMemory = asyncHandler(async (req, res) => {
       req.file.buffer,
       req.file.mimetype,
     );
+
+    console.log(`[MEMORY-CREATE] Uploaded: ${uploadedMedia.secure_url}`);
 
     const { data: mediaRow, error: mediaInsertError } = await supabase
       .from("media_files")
@@ -178,6 +187,24 @@ const createMemory = asyncHandler(async (req, res) => {
 
   const created = await memoryService.createMemory(payload);
 
+  // Extract album_id if provided
+  let albumId = null;
+  if (req.body.album_id) {
+    albumId = parseUuid(req.body.album_id, "album_id");
+
+    // Insert into album_memories join table
+    const { error: joinError } = await supabase
+      .from("album_memories")
+      .insert({ album_id: albumId, memory_id: created.id });
+
+    if (joinError) {
+      console.error("[MEMORY-CREATE] Error linking to album:", joinError);
+      // Don't throw error - memory is created, just couldn't link to album
+    } else {
+      console.log(`[MEMORY-CREATE] Memory linked to album: ${albumId}`);
+    }
+  }
+
   let mediaUrl = null;
   if (payload.media_id) {
     const { data: mediaFile, error: mediaLookupError } = await supabase
@@ -193,7 +220,7 @@ const createMemory = asyncHandler(async (req, res) => {
     mediaUrl = mediaFile?.secure_url || null;
   }
 
-  return sendSuccess(res, 201, {
+  const response = {
     id: created.id,
     title: created.title,
     description: created.description || payload.description || null,
@@ -209,8 +236,13 @@ const createMemory = asyncHandler(async (req, res) => {
           ? "audio"
           : "video"
       : null,
+    album_id: albumId,
     created_at: created.created_at,
-  });
+  };
+
+  console.log("[MEMORY-CREATE] Response:", response);
+
+  return sendSuccess(res, 201, { memory: response });
 });
 
 const updateMemory = asyncHandler(async (req, res) => {

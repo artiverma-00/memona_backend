@@ -1,5 +1,6 @@
 -- Enable UUID generation
 create extension if not exists "pgcrypto";
+
 -- profiles table extends auth.users
 -- Stores additional user data like role and avatar
 
@@ -13,6 +14,7 @@ create table public.profiles (
 
 -- Enable RLS
 alter table public.profiles enable row level security;
+
 -- Stores metadata of uploaded images/videos/audio
 
 create table public.media_files (
@@ -28,15 +30,16 @@ create table public.media_files (
 );
 
 alter table public.media_files enable row level security;
+
 -- Main memory storage table
 
 create table public.memories (
   id uuid default gen_random_uuid() primary key,
-  user_id uuid references public.profiles(id) on delete cascade,
+  user_id uuid references auth.users(id) on delete cascade,
   title text not null,
   description text,
-  media_id uuid references public.media_files(id),
-  voice_note_id uuid references public.media_files(id),
+  media_id uuid references public.media_files(id) on delete set null,
+  voice_note_id uuid references public.media_files(id) on delete set null,
   location_lat numeric,
   location_lng numeric,
   location_name text,
@@ -44,6 +47,19 @@ create table public.memories (
   is_public boolean default false,
   created_at timestamp default now()
 );
+
+-- Add explicit foreign key constraints with names for proper Supabase join resolution
+alter table public.memories 
+  add constraint if not exists memories_media_id_fkey 
+  foreign key (media_id) 
+  references public.media_files(id) 
+  on delete set null;
+
+alter table public.memories 
+  add constraint if not exists memories_voice_note_id_fkey 
+  foreign key (voice_note_id) 
+  references public.media_files(id) 
+  on delete set null;
 
 alter table public.memories enable row level security;
 
@@ -64,6 +80,7 @@ create table public.memory_tags (
 
 alter table public.tags enable row level security;
 alter table public.memory_tags enable row level security;
+
 -- Albums table
 
 create table public.albums (
@@ -76,6 +93,13 @@ create table public.albums (
   created_at timestamp default now()
 );
 
+-- Add explicit foreign key constraint for album cover media
+alter table public.albums 
+  add constraint if not exists albums_cover_media_id_fkey 
+  foreign key (cover_media_id) 
+  references public.media_files(id) 
+  on delete set null;
+
 -- Join table between albums and memories
 
 create table public.album_memories (
@@ -86,6 +110,7 @@ create table public.album_memories (
 
 alter table public.albums enable row level security;
 alter table public.album_memories enable row level security;
+
 -- Allows shared album editing
 
 create table public.collaborations (
@@ -97,14 +122,24 @@ create table public.collaborations (
 );
 
 alter table public.collaborations enable row level security;
+
 -- Additional milestone metadata
 
 create table public.milestones (
   id uuid default gen_random_uuid() primary key,
+  user_id uuid references auth.users(id) on delete cascade,
   memory_id uuid references public.memories(id) on delete cascade,
   celebration_date date,
-  reminder_enabled boolean default true
+  reminder_enabled boolean default true,
+  created_at timestamp default now()
 );
+
+-- Add explicit foreign key constraint for milestones
+alter table public.milestones 
+  add constraint if not exists milestones_memory_id_fkey 
+  foreign key (memory_id) 
+  references public.memories(id) 
+  on delete cascade;
 
 alter table public.milestones enable row level security;
 
@@ -128,6 +163,7 @@ create table public.memory_comments (
 
 alter table public.memory_likes enable row level security;
 alter table public.memory_comments enable row level security;
+
 -- Stores AI generated memory videos
 
 create table public.ai_generated_videos (
@@ -138,7 +174,15 @@ create table public.ai_generated_videos (
   created_at timestamp default now()
 );
 
+-- Add explicit foreign key constraint for AI videos
+alter table public.ai_generated_videos 
+  add constraint if not exists ai_generated_videos_video_media_id_fkey 
+  foreign key (video_media_id) 
+  references public.media_files(id) 
+  on delete set null;
+
 alter table public.ai_generated_videos enable row level security;
+
 -- Exported PDF/ZIP records
 
 create table public.exports (
@@ -150,6 +194,7 @@ create table public.exports (
 );
 
 alter table public.exports enable row level security;
+
 -- Used for admin analytics dashboard
 
 create table public.activity_logs (
@@ -161,6 +206,9 @@ create table public.activity_logs (
 );
 
 alter table public.activity_logs enable row level security;
+
+-- Row Level Security Policies
+
 -- Users can view and update their own profile
 create policy "Users manage own profile"
 on public.profiles
@@ -210,11 +258,12 @@ create policy "Users manage comments"
 on public.memory_comments
 for all
 using (auth.uid() = user_id);
+
+-- Migration: Fix user_id in memories table
 begin;
 
 alter table if exists public.memories
   drop constraint if exists memories_user_id_fkey;
-
 
 delete from public.memories where user_id is null;
 
@@ -264,4 +313,30 @@ for delete
 to authenticated
 using (auth.uid() = user_id);
 
+-- Add user_id to milestones table for RLS
+alter table public.milestones add column if not exists user_id uuid;
+
+-- Update existing milestones with user_id from memories
+update public.milestones m
+set user_id = mem.user_id
+from public.memories mem
+where m.memory_id = mem.id and m.user_id is null;
+
+-- Set not null constraint
+alter table public.milestones alter column user_id set not null;
+
+-- Add foreign key for milestone user_id
+alter table public.milestones 
+  add constraint if not exists milestones_user_id_fkey 
+  foreign key (user_id) 
+  references auth.users(id) 
+  on delete cascade;
+
+-- Add RLS for milestones
+create policy "Users manage own milestones"
+on public.milestones
+for all
+using (auth.uid() = user_id);
+
 commit;
+
