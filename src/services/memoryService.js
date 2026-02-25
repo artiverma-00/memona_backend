@@ -23,7 +23,7 @@ const listMapMemoriesByUser = async (userId) => {
   const { data, error } = await supabase
     .from(TABLE_NAME)
     .select(
-      "id, title, created_at, location_lat, location_lng, media_file:media_files!media_id(secure_url)",
+      "id, title, created_at, location_lat, location_lng, location_name, media_file:media_files!media_id(secure_url)",
     )
     .eq("user_id", userId)
     .not("location_lat", "is", null)
@@ -44,6 +44,7 @@ const listMapMemoriesByUser = async (userId) => {
     created_at: memory.created_at,
     location_lat: Number(memory.location_lat),
     location_lng: Number(memory.location_lng),
+    location_name: memory.location_name || "",
     media_thumbnail: memory.media_file?.secure_url || null,
   }));
 };
