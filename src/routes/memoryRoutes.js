@@ -3,6 +3,7 @@ const authMiddleware = require("../middlewares/authMiddleware");
 const { uploadMiddleware } = require("../middlewares/uploadMiddleware");
 const {
   getMemories,
+  getMapMemories,
   getMemoryById,
   createMemory,
   updateMemory,
@@ -12,6 +13,7 @@ const {
 const router = express.Router();
 
 router.get("/", authMiddleware, getMemories);
+router.get("/map", authMiddleware, getMapMemories);
 router.get("/:id", authMiddleware, getMemoryById);
 router.post("/", authMiddleware, uploadMiddleware, createMemory);
 router.put("/:id", authMiddleware, updateMemory);

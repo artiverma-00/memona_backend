@@ -19,9 +19,14 @@ const enrichAlbumResponse = (album) => {
   // Flatten memories from album_memories join table
   // Supabase may return this as 'memories' due to our alias, or 'album_memories'
   const rawJunctions = album.memories || album.album_memories || [];
+  const hasNestedMemoryPayload = Array.isArray(rawJunctions)
+    ? rawJunctions.some(
+        (item) => item && typeof item === "object" && item.memory,
+      )
+    : false;
 
   let flattenedMemories = [];
-  if (Array.isArray(rawJunctions)) {
+  if (Array.isArray(rawJunctions) && hasNestedMemoryPayload) {
     flattenedMemories = rawJunctions
       .map((item) => {
         // item is from album_memories junction table
@@ -50,9 +55,17 @@ const enrichAlbumResponse = (album) => {
       .filter(Boolean);
   }
 
+  const computedMemoryCount = Array.isArray(rawJunctions)
+    ? rawJunctions.length
+    : Array.isArray(flattenedMemories)
+      ? flattenedMemories.length
+      : 0;
+
   return {
     ...album,
     cover_image_url: resolveCoverMedia(album),
+    memory_count: computedMemoryCount,
+    memories_count: computedMemoryCount,
     memories: flattenedMemories,
   };
 };
@@ -81,6 +94,26 @@ const parseOptionalUuid = (value, fieldName) => {
   return normalized;
 };
 
+const assertAlbumOwnership = async (albumId, userId) => {
+  const { data: existing, error } = await supabase
+    .from("albums")
+    .select("id, user_id")
+    .eq("id", albumId)
+    .single();
+
+  if (error && error.code !== "PGRST116") {
+    throw createHttpError(500, error.message);
+  }
+
+  if (!existing) {
+    throw createHttpError(404, "Album not found");
+  }
+
+  if (existing.user_id !== userId) {
+    throw createHttpError(403, "Forbidden");
+  }
+};
+
 const getAlbums = asyncHandler(async (req, res) => {
   const albums = await albumService.listAlbumsByUser(req.user.id);
   return sendSuccess(
@@ -93,6 +126,7 @@ const getAlbums = asyncHandler(async (req, res) => {
 
 const getAlbumById = asyncHandler(async (req, res) => {
   const albumId = parseAlbumId(req.params.id);
+  await assertAlbumOwnership(albumId, req.user.id);
   const album = await albumService.getAlbumById(req.user.id, albumId);
 
   if (!album) {
@@ -163,6 +197,7 @@ const createAlbum = asyncHandler(async (req, res) => {
 
 const updateAlbum = asyncHandler(async (req, res) => {
   const albumId = parseAlbumId(req.params.id);
+  await assertAlbumOwnership(albumId, req.user.id);
   const payload = {};
 
   if (req.body.title !== undefined) {
@@ -230,6 +265,7 @@ const updateAlbum = asyncHandler(async (req, res) => {
 
 const deleteAlbum = asyncHandler(async (req, res) => {
   const albumId = parseAlbumId(req.params.id);
+  await assertAlbumOwnership(albumId, req.user.id);
   const deleted = await albumService.deleteAlbum(req.user.id, albumId);
 
   if (!deleted) {

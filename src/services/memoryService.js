@@ -19,6 +19,35 @@ const listMemoriesByUser = async (userId) => {
   return data;
 };
 
+const listMapMemoriesByUser = async (userId) => {
+  const { data, error } = await supabase
+    .from(TABLE_NAME)
+    .select(
+      "id, title, created_at, location_lat, location_lng, media_file:media_files!media_id(secure_url)",
+    )
+    .eq("user_id", userId)
+    .not("location_lat", "is", null)
+    .not("location_lng", "is", null)
+    .gte("location_lat", -90)
+    .lte("location_lat", 90)
+    .gte("location_lng", -180)
+    .lte("location_lng", 180)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw createHttpError(500, error.message);
+  }
+
+  return (data || []).map((memory) => ({
+    id: memory.id,
+    title: memory.title,
+    created_at: memory.created_at,
+    location_lat: Number(memory.location_lat),
+    location_lng: Number(memory.location_lng),
+    media_thumbnail: memory.media_file?.secure_url || null,
+  }));
+};
+
 const getMemoryById = async (userId, memoryId) => {
   const { data, error } = await supabase
     .from(TABLE_NAME)
@@ -82,6 +111,7 @@ const deleteMemory = async (userId, memoryId) => {
 
 module.exports = {
   listMemoriesByUser,
+  listMapMemoriesByUser,
   getMemoryById,
   createMemory,
   updateMemory,

@@ -34,10 +34,92 @@ const parseBoolean = (value, fallback = false) => {
   return fallback;
 };
 
+const buildAnniversaryTiming = (
+  celebrationDate,
+  referenceDate = new Date(),
+) => {
+  const parsed = new Date(celebrationDate);
+  if (Number.isNaN(parsed.getTime())) {
+    return {
+      next_anniversary_date: null,
+      days_until_next_anniversary: null,
+      celebrated_this_year: false,
+      years_since_first_celebration: null,
+    };
+  }
+
+  const baseDate = new Date(referenceDate);
+  baseDate.setHours(0, 0, 0, 0);
+
+  const month = parsed.getMonth();
+  const day = parsed.getDate();
+  const currentYear = baseDate.getFullYear();
+
+  let nextAnniversaryDate = new Date(currentYear, month, day);
+  nextAnniversaryDate.setHours(0, 0, 0, 0);
+
+  if (nextAnniversaryDate < baseDate) {
+    nextAnniversaryDate = new Date(currentYear + 1, month, day);
+    nextAnniversaryDate.setHours(0, 0, 0, 0);
+  }
+
+  const msPerDay = 24 * 60 * 60 * 1000;
+  const daysUntilNextAnniversary = Math.round(
+    (nextAnniversaryDate.getTime() - baseDate.getTime()) / msPerDay,
+  );
+
+  const celebratedThisYear =
+    month < baseDate.getMonth() ||
+    (month === baseDate.getMonth() && day <= baseDate.getDate());
+
+  const yearsSinceFirstCelebration = Math.max(
+    currentYear - parsed.getFullYear(),
+    0,
+  );
+
+  return {
+    next_anniversary_date: nextAnniversaryDate.toISOString(),
+    days_until_next_anniversary: daysUntilNextAnniversary,
+    celebrated_this_year: celebratedThisYear,
+    years_since_first_celebration: yearsSinceFirstCelebration,
+  };
+};
+
+const enrichMilestoneTiming = (milestone, referenceDate = new Date()) => {
+  if (!milestone) {
+    return milestone;
+  }
+
+  return {
+    ...milestone,
+    ...buildAnniversaryTiming(milestone.celebration_date, referenceDate),
+  };
+};
+
+const assertMilestoneOwnership = async (milestoneId, userId) => {
+  const { data: existing, error } = await supabase
+    .from("milestones")
+    .select("id, user_id")
+    .eq("id", milestoneId)
+    .single();
+
+  if (error && error.code !== "PGRST116") {
+    throw createHttpError(500, error.message);
+  }
+
+  if (!existing) {
+    throw createHttpError(404, "Milestone not found");
+  }
+
+  if (existing.user_id !== userId) {
+    throw createHttpError(403, "Forbidden");
+  }
+};
+
 /**
  * Get all user milestones with memory details
  * Joins milestones table with memories table using explicit relationship
- * Also returns standalone milestones (without memory_id) with their metadata
+ * Also returns standalone milestones (without memory_id)
  */
 const getAllUserMilestones = asyncHandler(async (req, res) => {
   const userId = req.user.id;
@@ -121,22 +203,17 @@ const getAllUserMilestones = asyncHandler(async (req, res) => {
     })
     .filter(Boolean);
 
-  // Process standalone milestones (with metadata)
+  // Process standalone milestones
   const standaloneResult = standaloneMilestones.map((milestone) => {
-    const metadata = milestone.metadata || {};
     return {
       ...milestone,
       memories: null,
-      // Use metadata for standalone milestones
-      title: metadata.title || "",
-      description: metadata.description || "",
-      type: metadata.type || "life_event",
-      target_date: metadata.target_date || null,
-      target_count: metadata.target_count || null,
-      reminder_option:
-        metadata.reminder_days !== undefined
-          ? getReminderOptionFromDays(metadata.reminder_days)
-          : "1_week_before",
+      title: "",
+      description: "",
+      type: "life_event",
+      target_date: null,
+      target_count: null,
+      reminder_option: "1_week_before",
       is_standalone: true,
       // Map celebration_date to date for frontend compatibility
       date: milestone.celebration_date,
@@ -144,7 +221,9 @@ const getAllUserMilestones = asyncHandler(async (req, res) => {
   });
 
   // Combine both types of milestones
-  const allMilestones = [...validMilestonesFromMemory, ...standaloneResult];
+  const allMilestones = [...validMilestonesFromMemory, ...standaloneResult].map(
+    (milestone) => enrichMilestoneTiming(milestone),
+  );
 
   return sendSuccess(
     res,
@@ -154,22 +233,10 @@ const getAllUserMilestones = asyncHandler(async (req, res) => {
   );
 });
 
-// Helper function to convert reminder days to reminder option string
-const getReminderOptionFromDays = (days) => {
-  const REMINDER_OPTIONS_MAP = {
-    0: "on_date",
-    1: "1_day_before",
-    3: "3_days_before",
-    7: "1_week_before",
-    30: "1_month_before",
-  };
-  return REMINDER_OPTIONS_MAP[days] || "1_week_before";
-};
-
 /**
  * Create a new milestone
  * Supports two modes:
- * 1. Standalone: Create with full metadata (title, description, type, targetDate, targetCount, reminderOption)
+ * 1. Standalone: Create as a user milestone without memory linkage
  * 2. From Memory: Link to an existing memory (requires valid UUID memory_id)
  */
 const createMilestone = asyncHandler(async (req, res) => {
@@ -207,7 +274,7 @@ const createMilestone = asyncHandler(async (req, res) => {
       throw createHttpError(400, "Invalid celebration_date format");
     }
 
-    const reminderEnabled = parseBoolean(reminder_enabled, false);
+    const reminderEnabled = parseBoolean(reminder_enabled, true);
 
     // Verify memory exists and belongs to user
     const { data: memory, error: memoryError } = await supabase
@@ -237,7 +304,10 @@ const createMilestone = asyncHandler(async (req, res) => {
       .single();
 
     if (createError) {
-      throw createHttpError(500, createError.message);
+      return res.status(400).json({
+        success: false,
+        message: createError.message,
+      });
     }
 
     // Fetch the memory with its media
@@ -271,23 +341,44 @@ const createMilestone = asyncHandler(async (req, res) => {
       memories: memoryData || null,
     };
 
-    // Update memories.is_milestone = true
-    const { error: updateError } = await supabase
+    // Update memories.is_milestone = true (required for dashboard visibility)
+    const { data: updatedMemory, error: updateError } = await supabase
       .from("memories")
       .update({ is_milestone: true })
       .eq("id", memoryId)
-      .eq("user_id", userId);
+      .eq("user_id", userId)
+      .select("id")
+      .maybeSingle();
 
     if (updateError) {
-      console.error("Error updating memory is_milestone flag:", updateError);
+      // Roll back milestone insert to avoid inconsistent state
+      await supabase.from("milestones").delete().eq("id", newMilestone.id);
+      return res.status(400).json({
+        success: false,
+        message: updateError.message,
+      });
     }
 
-    return sendSuccess(res, 201, "Milestone created successfully", {
-      ...milestoneWithMemory,
-      date: milestoneWithMemory.celebration_date,
-    });
+    if (!updatedMemory) {
+      // RLS or ownership mismatch can produce no updated row without explicit DB error
+      await supabase.from("milestones").delete().eq("id", newMilestone.id);
+      return res.status(400).json({
+        success: false,
+        message: "Unable to update memory milestone flag",
+      });
+    }
+
+    return sendSuccess(
+      res,
+      201,
+      "Milestone created successfully",
+      enrichMilestoneTiming({
+        ...milestoneWithMemory,
+        date: milestoneWithMemory.celebration_date,
+      }),
+    );
   } else {
-    // Mode 2: Create standalone milestone with full metadata
+    // Mode 2: Create standalone milestone (no memory linkage)
     // This handles cases where:
     // - memory_id is empty string ""
     // - memory_id is null/undefined
@@ -342,20 +433,12 @@ const createMilestone = asyncHandler(async (req, res) => {
       reminderEnabled = reminderDays !== null;
     }
 
-    // Create milestone with extended metadata
+    // Create standalone milestone using available schema fields
     const milestoneData = {
       user_id: userId,
+      memory_id: null,
       celebration_date: celebrationDate.toISOString(),
       reminder_enabled: reminderEnabled,
-      // Extended fields stored as JSON in a metadata column
-      metadata: {
-        title: title.trim(),
-        description: description || "",
-        type: type || "life_event",
-        target_date: targetDate ? targetDate.toISOString() : null,
-        target_count: targetCount,
-        reminder_days: reminderDays,
-      },
     };
 
     const { data: newMilestone, error: createError } = await supabase
@@ -365,23 +448,29 @@ const createMilestone = asyncHandler(async (req, res) => {
       .single();
 
     if (createError) {
-      throw createHttpError(500, createError.message);
+      return res.status(400).json({
+        success: false,
+        message: createError.message,
+      });
     }
 
-    return sendSuccess(res, 201, "Milestone created successfully", {
-      ...newMilestone,
-      // Flatten metadata for frontend compatibility
-      title: newMilestone.metadata?.title || title,
-      description: newMilestone.metadata?.description || "",
-      type: newMilestone.metadata?.type || "life_event",
-      target_date:
-        newMilestone.metadata?.target_date || targetDate?.toISOString(),
-      target_count: newMilestone.metadata?.target_count || targetCount,
-      reminder_option: reminder_option || "1_week_before",
-      is_standalone: true,
-      // Essential for frontend date display
-      date: newMilestone.celebration_date,
-    });
+    return sendSuccess(
+      res,
+      201,
+      "Milestone created successfully",
+      enrichMilestoneTiming({
+        ...newMilestone,
+        title: title.trim(),
+        description: description || "",
+        type: type || "life_event",
+        target_date: targetDate ? targetDate.toISOString() : null,
+        target_count: targetCount,
+        reminder_option: reminder_option || "1_week_before",
+        is_standalone: true,
+        // Essential for frontend date display
+        date: newMilestone.celebration_date,
+      }),
+    );
   }
 });
 
@@ -391,18 +480,7 @@ const createMilestone = asyncHandler(async (req, res) => {
 const updateMilestone = asyncHandler(async (req, res) => {
   const userId = req.user.id;
   const milestoneId = parseUUID(req.params.id, "milestone_id");
-
-  // Verify milestone exists and belongs to user
-  const { data: existing, error: getError } = await supabase
-    .from("milestones")
-    .select("id, user_id, memory_id")
-    .eq("id", milestoneId)
-    .eq("user_id", userId)
-    .single();
-
-  if (getError || !existing) {
-    throw createHttpError(404, "Milestone not found");
-  }
+  await assertMilestoneOwnership(milestoneId, userId);
 
   const payload = {};
 
@@ -435,13 +513,14 @@ const updateMilestone = asyncHandler(async (req, res) => {
       celebration_date,
       reminder_enabled,
       created_at,
-      updated_at,
       memories(
         id,
         user_id,
         title,
         description,
-        location,
+        location_name,
+        location_lat,
+        location_lng,
         created_at,
         media_file:media_files!memories_media_id_fkey(secure_url, resource_type)
       )
@@ -453,10 +532,15 @@ const updateMilestone = asyncHandler(async (req, res) => {
     throw createHttpError(500, updateError.message);
   }
 
-  return sendSuccess(res, 200, "Milestone updated successfully", {
-    ...updated,
-    date: updated.celebration_date,
-  });
+  return sendSuccess(
+    res,
+    200,
+    "Milestone updated successfully",
+    enrichMilestoneTiming({
+      ...updated,
+      date: updated.celebration_date,
+    }),
+  );
 });
 
 /**
@@ -465,6 +549,7 @@ const updateMilestone = asyncHandler(async (req, res) => {
 const deleteMilestone = asyncHandler(async (req, res) => {
   const userId = req.user.id;
   const milestoneId = parseUUID(req.params.id, "milestone_id");
+  await assertMilestoneOwnership(milestoneId, userId);
 
   // Get milestone to find associated memory
   const { data: milestone, error: getError } = await supabase
@@ -584,11 +669,11 @@ const getTodayReminders = asyncHandler(async (req, res) => {
       const celebDay = String(celebrationDate.getDate()).padStart(2, "0");
 
       if (celebMonth === todayMonth && celebDay === todayDay) {
-        return {
+        return enrichMilestoneTiming({
           ...milestone,
           memories: memory,
           date: milestone.celebration_date,
-        };
+        });
       }
       return null;
     })

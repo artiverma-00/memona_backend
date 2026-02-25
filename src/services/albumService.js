@@ -7,7 +7,7 @@ const listAlbumsByUser = async (userId) => {
   const { data, error } = await supabase
     .from(TABLE_NAME)
     .select(
-      "*, cover_media:media_files!cover_media_id(secure_url, resource_type)",
+      "*, cover_media:media_files!cover_media_id(secure_url, resource_type), album_memories(memory_id)",
     )
     .eq("user_id", userId)
     .order("created_at", { ascending: false });

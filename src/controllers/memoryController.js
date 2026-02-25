@@ -66,14 +66,38 @@ const resolveMedia = (memory) => {
 const normalizeMemory = (memory, userId) => {
   if (!memory) return null;
   const media = resolveMedia(memory);
+  const uploadedAt = memory.created_at || null;
+
   return {
     ...memory,
     media_url: media.mediaUrl,
     media_type: media.mediaType,
+    uploaded_at: uploadedAt,
+    upload_date: uploadedAt,
     is_favorite:
       memory.memory_likes?.some((like) => like.user_id === userId) || false,
     album_id: memory.album_memories?.[0]?.album_id || null,
   };
+};
+
+const assertMemoryOwnership = async (memoryId, userId) => {
+  const { data: existing, error } = await supabase
+    .from("memories")
+    .select("id, user_id")
+    .eq("id", memoryId)
+    .single();
+
+  if (error && error.code !== "PGRST116") {
+    throw createHttpError(500, error.message);
+  }
+
+  if (!existing) {
+    throw createHttpError(404, "Memory not found");
+  }
+
+  if (existing.user_id !== userId) {
+    throw createHttpError(403, "Forbidden");
+  }
 };
 
 const getMemories = asyncHandler(async (req, res) => {
@@ -82,8 +106,14 @@ const getMemories = asyncHandler(async (req, res) => {
   return sendSuccess(res, 200, normalized);
 });
 
+const getMapMemories = asyncHandler(async (req, res) => {
+  const memories = await memoryService.listMapMemoriesByUser(req.user.id);
+  return sendSuccess(res, 200, memories);
+});
+
 const getMemoryById = asyncHandler(async (req, res) => {
   const memoryId = parseMemoryId(req.params.id);
+  await assertMemoryOwnership(memoryId, req.user.id);
   const memory = await memoryService.getMemoryById(req.user.id, memoryId);
 
   if (!memory) {
@@ -104,17 +134,6 @@ const createMemory = asyncHandler(async (req, res) => {
     user_id: req.user.id,
     title,
   };
-
-  if (
-    req.body.date !== undefined &&
-    req.body.date !== null &&
-    req.body.date !== ""
-  ) {
-    payload.date = req.body.date;
-  } else {
-    // Default to current time if no date provided, to ensure "real-time" accuracy
-    payload.date = new Date().toISOString();
-  }
 
   if (req.body.description !== undefined) {
     payload.description = String(req.body.description || "").trim();
@@ -223,6 +242,7 @@ const createMemory = asyncHandler(async (req, res) => {
 
 const updateMemory = asyncHandler(async (req, res) => {
   const memoryId = parseMemoryId(req.params.id);
+  await assertMemoryOwnership(memoryId, req.user.id);
   const payload = {};
 
   if (req.body.title !== undefined) {
@@ -259,10 +279,6 @@ const updateMemory = asyncHandler(async (req, res) => {
     payload.is_public = parseBoolean(req.body.is_public);
   }
 
-  if (req.body.date !== undefined) {
-    payload.date = req.body.date;
-  }
-
   if (req.body.media_id !== undefined) {
     payload.media_id = req.body.media_id
       ? parseUuid(req.body.media_id, "media_id")
@@ -294,6 +310,7 @@ const updateMemory = asyncHandler(async (req, res) => {
 
 const deleteMemory = asyncHandler(async (req, res) => {
   const memoryId = parseMemoryId(req.params.id);
+  await assertMemoryOwnership(memoryId, req.user.id);
   const deleted = await memoryService.deleteMemory(req.user.id, memoryId);
 
   if (!deleted) {
@@ -305,6 +322,7 @@ const deleteMemory = asyncHandler(async (req, res) => {
 
 module.exports = {
   getMemories,
+  getMapMemories,
   getMemoryById,
   createMemory,
   updateMemory,
