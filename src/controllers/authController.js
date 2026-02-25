@@ -9,6 +9,7 @@ const {
   createHttpError,
   sendSuccess,
 } = require("../utils/responseHandler");
+const { withRetry, isRetryableError } = require("../utils/retryUtils");
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -60,6 +61,56 @@ const buildUserPayload = (user, role, options = {}) => ({
 const isRateLimitError = (message) =>
   typeof message === "string" &&
   message.toLowerCase().includes("rate limit exceeded");
+
+const isEmailNotConfirmedError = (error) => {
+  const message = String(error?.message || "").toLowerCase();
+  const code = String(error?.code || "").toLowerCase();
+
+  return (
+    code === "email_not_confirmed" || message.includes("email not confirmed")
+  );
+};
+
+const isInvalidCredentialError = (error) => {
+  const message = String(error?.message || "").toLowerCase();
+  const code = String(error?.code || "").toLowerCase();
+
+  return (
+    code === "invalid_credentials" ||
+    code === "invalid_grant" ||
+    message.includes("invalid login credentials") ||
+    message.includes("invalid credentials") ||
+    message.includes("email or password")
+  );
+};
+
+const isAuthNetworkError = (error) => {
+  const message = String(error?.message || "").toLowerCase();
+  const causeMessage = String(error?.cause?.message || "").toLowerCase();
+
+  return (
+    message.includes("fetch failed") ||
+    message.includes("network") ||
+    causeMessage.includes("connect timeout") ||
+    causeMessage.includes("tls") ||
+    causeMessage.includes("certificate")
+  );
+};
+
+const throwForAuthRequestFailure = (error, context = "") => {
+  if (isAuthNetworkError(error)) {
+    const contextInfo = context ? ` (${context})` : "";
+    const causeInfo = error?.cause?.message
+      ? ` Cause: ${error.cause.message}`
+      : "";
+    throw createHttpError(
+      503,
+      `Authentication service is unreachable. Please check your internet or VPN and try again.${contextInfo}${causeInfo}`,
+    );
+  }
+
+  throw createHttpError(500, String(error?.message || "Authentication failed"));
+};
 
 const authUserExistsByEmail = async (email) => {
   let page = 1;
@@ -127,18 +178,32 @@ const register = asyncHandler(async (req, res) => {
   let signUpData = null;
   let signUpError = null;
 
-  const { data, error } = await authClient.auth.signUp({
-    email,
-    password,
-    options: {
-      data: {
-        full_name: fullName,
+  let data;
+  let error;
+
+  try {
+    ({ data, error } = await authClient.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          full_name: fullName,
+        },
       },
-    },
-  });
+    }));
+  } catch (signUpException) {
+    throwForAuthRequestFailure(signUpException);
+  }
 
   signUpData = data;
   signUpError = error;
+
+  if (signUpError && isAuthNetworkError(signUpError)) {
+    throw createHttpError(
+      503,
+      "Authentication service is unreachable. Please check your internet or VPN and try again.",
+    );
+  }
 
   // Dev-friendly fallback: create confirmed user when signup email rate limit is hit.
   if (signUpError && isRateLimitError(signUpError.message)) {
@@ -185,24 +250,63 @@ const register = asyncHandler(async (req, res) => {
   // Ensure a JWT is returned for frontend session storage.
   let session = signUpData?.session || null;
   if (!session) {
-    const { data: loginData, error: loginError } =
-      await authClient.auth.signInWithPassword({
-        email,
-        password,
-      });
+    let loginData;
+    let loginError;
+
+    try {
+      ({ data: loginData, error: loginError } =
+        await authClient.auth.signInWithPassword({
+          email,
+          password,
+        }));
+    } catch (loginException) {
+      throwForAuthRequestFailure(loginException);
+    }
 
     if (!loginError) {
       session = loginData?.session || null;
     }
   }
 
+  if (!session && signUpData?.user?.id) {
+    const { error: confirmError } = await adminClient.auth.admin.updateUserById(
+      signUpData.user.id,
+      {
+        email_confirm: true,
+      },
+    );
+
+    if (!confirmError) {
+      let confirmedLoginData;
+      let confirmedLoginError;
+
+      try {
+        ({ data: confirmedLoginData, error: confirmedLoginError } =
+          await authClient.auth.signInWithPassword({
+            email,
+            password,
+          }));
+      } catch (confirmedLoginException) {
+        throwForAuthRequestFailure(confirmedLoginException);
+      }
+
+      if (!confirmedLoginError) {
+        session = confirmedLoginData?.session || null;
+      }
+    }
+  }
+
+  if (!session) {
+    throw createHttpError(403, "Please verify your email first");
+  }
+
   const userWithRole = buildUserPayload(signUpData.user, role);
 
   return sendSuccess(res, 201, {
     user: userWithRole,
-    access_token: session?.access_token || null,
-    refresh_token: session?.refresh_token || null,
-    expires_in: session?.expires_in || null,
+    access_token: session.access_token,
+    refresh_token: session.refresh_token,
+    expires_in: session.expires_in,
   });
 });
 
@@ -216,20 +320,45 @@ const login = asyncHandler(async (req, res) => {
 
   validateCredentials(email, password);
 
-  const { data, error } = await authClient.auth.signInWithPassword({
-    email,
-    password,
-  });
+  let data;
+  let error;
+
+  // Try with retry logic for network issues
+  try {
+    ({ data, error } = await withRetry(
+      () =>
+        authClient.auth.signInWithPassword({
+          email,
+          password,
+        }),
+      {
+        maxRetries: 3,
+        initialDelay: 1500,
+        onRetry: (err, attempt, total, delay) => {
+          console.log(
+            `[Login] Attempt ${attempt}/${total} failed, retrying in ${delay}ms: ${err.message}`,
+          );
+        },
+      },
+    ));
+  } catch (loginException) {
+    throwForAuthRequestFailure(loginException, "login");
+  }
 
   if (error) {
-    const lowerMsg = String(error.message || "").toLowerCase();
+    if (isAuthNetworkError(error)) {
+      throw createHttpError(
+        503,
+        "Authentication service is unreachable. Please check your internet or VPN and try again.",
+      );
+    }
 
     // Map Supabase errors to UI-friendly messages
-    if (lowerMsg.includes("email not confirmed")) {
+    if (isEmailNotConfirmedError(error)) {
       throw createHttpError(403, "Please verify your email first");
     }
 
-    if (lowerMsg.includes("invalid login credentials")) {
+    if (isInvalidCredentialError(error)) {
       const exists = await authUserExistsByEmail(email);
       if (exists === false) {
         throw createHttpError(404, "No account found with this email");
@@ -369,10 +498,65 @@ const changePassword = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * Health check endpoint to verify Supabase connectivity
+ * Returns status of various service dependencies
+ */
+const healthCheck = asyncHandler(async (req, res) => {
+  const healthStatus = {
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    services: {
+      supabase: {
+        status: "unknown",
+        latency: null,
+        error: null,
+      },
+    },
+  };
+
+  // Check Supabase connectivity
+  const startTime = Date.now();
+  try {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id")
+      .limit(1);
+
+    if (error) {
+      throw error;
+    }
+
+    healthStatus.services.supabase = {
+      status: "healthy",
+      latency: Date.now() - startTime,
+      error: null,
+    };
+  } catch (error) {
+    healthStatus.status = "degraded";
+    healthStatus.services.supabase = {
+      status: "unhealthy",
+      latency: Date.now() - startTime,
+      error: isRetryableError(error)
+        ? "Network error - service may be unreachable"
+        : error.message,
+    };
+  }
+
+  // Return appropriate status code based on health
+  const statusCode = healthStatus.status === "ok" ? 200 : 503;
+
+  return res.status(statusCode).json({
+    success: true,
+    data: healthStatus,
+  });
+});
+
 module.exports = {
   register,
   login,
   me,
   updateProfile,
   changePassword,
+  healthCheck,
 };

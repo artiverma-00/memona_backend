@@ -115,7 +115,7 @@ const getAllUserMilestones = asyncHandler(async (req, res) => {
         // Flatten memory fields for frontend compatibility
         title: memory.title || "",
         description: memory.description || "",
-        date: memory.created_at,
+        date: milestone.celebration_date,
         is_standalone: false,
       };
     })
@@ -282,12 +282,10 @@ const createMilestone = asyncHandler(async (req, res) => {
       console.error("Error updating memory is_milestone flag:", updateError);
     }
 
-    return sendSuccess(
-      res,
-      201,
-      "Milestone created successfully",
-      milestoneWithMemory,
-    );
+    return sendSuccess(res, 201, "Milestone created successfully", {
+      ...milestoneWithMemory,
+      date: milestoneWithMemory.celebration_date,
+    });
   } else {
     // Mode 2: Create standalone milestone with full metadata
     // This handles cases where:
@@ -381,6 +379,8 @@ const createMilestone = asyncHandler(async (req, res) => {
       target_count: newMilestone.metadata?.target_count || targetCount,
       reminder_option: reminder_option || "1_week_before",
       is_standalone: true,
+      // Essential for frontend date display
+      date: newMilestone.celebration_date,
     });
   }
 });
@@ -453,7 +453,10 @@ const updateMilestone = asyncHandler(async (req, res) => {
     throw createHttpError(500, updateError.message);
   }
 
-  return sendSuccess(res, 200, "Milestone updated successfully", updated);
+  return sendSuccess(res, 200, "Milestone updated successfully", {
+    ...updated,
+    date: updated.celebration_date,
+  });
 });
 
 /**
@@ -584,6 +587,7 @@ const getTodayReminders = asyncHandler(async (req, res) => {
         return {
           ...milestone,
           memories: memory,
+          date: milestone.celebration_date,
         };
       }
       return null;

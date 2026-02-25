@@ -63,15 +63,22 @@ const resolveMedia = (memory) => {
   };
 };
 
+const normalizeMemory = (memory, userId) => {
+  if (!memory) return null;
+  const media = resolveMedia(memory);
+  return {
+    ...memory,
+    media_url: media.mediaUrl,
+    media_type: media.mediaType,
+    is_favorite:
+      memory.memory_likes?.some((like) => like.user_id === userId) || false,
+    album_id: memory.album_memories?.[0]?.album_id || null,
+  };
+};
+
 const getMemories = asyncHandler(async (req, res) => {
   const memories = await memoryService.listMemoriesByUser(req.user.id);
-  const normalized = memories.map((memory) => ({
-    ...memory,
-    media_url: resolveMedia(memory).mediaUrl,
-    media_type: resolveMedia(memory).mediaType,
-    album_id: memory.album_memories?.[0]?.album_id || null,
-  }));
-
+  const normalized = memories.map((m) => normalizeMemory(m, req.user.id));
   return sendSuccess(res, 200, normalized);
 });
 
@@ -83,12 +90,7 @@ const getMemoryById = asyncHandler(async (req, res) => {
     throw createHttpError(404, "Memory not found");
   }
 
-  return sendSuccess(res, 200, {
-    ...memory,
-    media_url: resolveMedia(memory).mediaUrl,
-    media_type: resolveMedia(memory).mediaType,
-    album_id: memory.album_memories?.[0]?.album_id || null,
-  });
+  return sendSuccess(res, 200, normalizeMemory(memory, req.user.id));
 });
 
 const createMemory = asyncHandler(async (req, res) => {
@@ -102,6 +104,17 @@ const createMemory = asyncHandler(async (req, res) => {
     user_id: req.user.id,
     title,
   };
+
+  if (
+    req.body.date !== undefined &&
+    req.body.date !== null &&
+    req.body.date !== ""
+  ) {
+    payload.date = req.body.date;
+  } else {
+    // Default to current time if no date provided, to ensure "real-time" accuracy
+    payload.date = new Date().toISOString();
+  }
 
   if (req.body.description !== undefined) {
     payload.description = String(req.body.description || "").trim();
@@ -205,44 +218,7 @@ const createMemory = asyncHandler(async (req, res) => {
     }
   }
 
-  let mediaUrl = null;
-  if (payload.media_id) {
-    const { data: mediaFile, error: mediaLookupError } = await supabase
-      .from("media_files")
-      .select("secure_url")
-      .eq("id", payload.media_id)
-      .single();
-
-    if (mediaLookupError && mediaLookupError.code !== "PGRST116") {
-      throw createHttpError(500, mediaLookupError.message);
-    }
-
-    mediaUrl = mediaFile?.secure_url || null;
-  }
-
-  const response = {
-    id: created.id,
-    title: created.title,
-    description: created.description || payload.description || null,
-    media_url: mediaUrl,
-    media_type: req.file
-      ? String(req.file.mimetype || "")
-          .toLowerCase()
-          .startsWith("image/")
-        ? "image"
-        : String(req.file.mimetype || "")
-              .toLowerCase()
-              .startsWith("audio/")
-          ? "audio"
-          : "video"
-      : null,
-    album_id: albumId,
-    created_at: created.created_at,
-  };
-
-  console.log("[MEMORY-CREATE] Response:", response);
-
-  return sendSuccess(res, 201, { memory: response });
+  return sendSuccess(res, 201, normalizeMemory(created, req.user.id));
 });
 
 const updateMemory = asyncHandler(async (req, res) => {
@@ -283,6 +259,10 @@ const updateMemory = asyncHandler(async (req, res) => {
     payload.is_public = parseBoolean(req.body.is_public);
   }
 
+  if (req.body.date !== undefined) {
+    payload.date = req.body.date;
+  }
+
   if (req.body.media_id !== undefined) {
     payload.media_id = req.body.media_id
       ? parseUuid(req.body.media_id, "media_id")
@@ -309,7 +289,7 @@ const updateMemory = asyncHandler(async (req, res) => {
     throw createHttpError(404, "Memory not found");
   }
 
-  return sendSuccess(res, 200, updated);
+  return sendSuccess(res, 200, normalizeMemory(updated, req.user.id));
 });
 
 const deleteMemory = asyncHandler(async (req, res) => {

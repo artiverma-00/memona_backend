@@ -13,10 +13,49 @@ const resolveCoverMedia = (album) => {
   return item?.secure_url || album?.cover_image_url || null;
 };
 
-const enrichAlbumResponse = (album) => ({
-  ...album,
-  cover_image_url: resolveCoverMedia(album),
-});
+const enrichAlbumResponse = (album) => {
+  if (!album) return null;
+
+  // Flatten memories from album_memories join table
+  // Supabase may return this as 'memories' due to our alias, or 'album_memories'
+  const rawJunctions = album.memories || album.album_memories || [];
+
+  let flattenedMemories = [];
+  if (Array.isArray(rawJunctions)) {
+    flattenedMemories = rawJunctions
+      .map((item) => {
+        // item is from album_memories junction table
+        const memory = item.memory || item;
+        if (!memory || typeof memory !== "object") return null;
+
+        // Resolve media metadata
+        const mediaRelation = memory.media_file || memory.media_files || null;
+        const mediaItem = Array.isArray(mediaRelation)
+          ? mediaRelation[0]
+          : mediaRelation;
+
+        const mediaUrl = mediaItem?.secure_url || memory.media_url || null;
+        const mediaType =
+          mediaItem?.resource_type || memory.media_type || "image";
+
+        return {
+          ...memory,
+          // Standardize media field for frontend components
+          media: mediaUrl ? [{ url: mediaUrl, type: mediaType }] : [],
+          media_url: mediaUrl,
+          media_type: mediaType,
+          date: memory.date || memory.created_at || null,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  return {
+    ...album,
+    cover_image_url: resolveCoverMedia(album),
+    memories: flattenedMemories,
+  };
+};
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

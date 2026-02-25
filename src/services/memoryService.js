@@ -2,13 +2,13 @@ const supabase = require("../config/supabaseClient");
 const { createHttpError } = require("../utils/responseHandler");
 
 const TABLE_NAME = "memories";
+const MEMORY_SELECT =
+  "*, media_file:media_files!media_id(secure_url, resource_type), album_memories(album_id), memory_likes(user_id)";
 
 const listMemoriesByUser = async (userId) => {
   const { data, error } = await supabase
     .from(TABLE_NAME)
-    .select(
-      "*, media_file:media_files!memories_media_id_fkey(secure_url, resource_type), album_memories(album_id)",
-    )
+    .select(MEMORY_SELECT)
     .eq("user_id", userId)
     .order("created_at", { ascending: false });
 
@@ -22,9 +22,7 @@ const listMemoriesByUser = async (userId) => {
 const getMemoryById = async (userId, memoryId) => {
   const { data, error } = await supabase
     .from(TABLE_NAME)
-    .select(
-      "*, media_file:media_files!memories_media_id_fkey(secure_url, resource_type), album_memories(album_id)",
-    )
+    .select(MEMORY_SELECT)
     .eq("id", memoryId)
     .eq("user_id", userId)
     .single();
@@ -40,7 +38,7 @@ const createMemory = async (payload) => {
   const { data, error } = await supabase
     .from(TABLE_NAME)
     .insert(payload)
-    .select("*")
+    .select(MEMORY_SELECT)
     .single();
 
   if (error) {
@@ -56,7 +54,7 @@ const updateMemory = async (userId, memoryId, payload) => {
     .update(payload)
     .eq("id", memoryId)
     .eq("user_id", userId)
-    .select("*")
+    .select(MEMORY_SELECT)
     .single();
 
   if (error && error.code !== "PGRST116") {

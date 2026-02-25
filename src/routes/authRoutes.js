@@ -5,6 +5,7 @@ const {
   me,
   updateProfile,
   changePassword,
+  healthCheck,
 } = require("../controllers/authController");
 const authMiddleware = require("../middlewares/authMiddleware");
 
@@ -15,5 +16,8 @@ router.post("/register", register);
 router.get("/me", authMiddleware, me);
 router.put("/profile", authMiddleware, updateProfile);
 router.put("/password", authMiddleware, changePassword);
+
+// Health check endpoint to verify Supabase connectivity
+router.get("/health", healthCheck);
 
 module.exports = router;
