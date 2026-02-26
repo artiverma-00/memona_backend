@@ -412,5 +412,5 @@ Platforms:
 * Caching layer for public memories
 * Admin profile ehancement
   
-  #Thank you
+**Thank you**
 
