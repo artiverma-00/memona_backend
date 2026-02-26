@@ -410,4 +410,7 @@ Platforms:
 * Rate limiting middleware
 * API documentation with Swagger
 * Caching layer for public memories
+* Admin profile ehancement
+  
+  #Thank you
 
