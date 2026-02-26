@@ -59,6 +59,16 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get("/", (req, res) =>
+  sendSuccess(res, 200, {
+    status: "ok",
+    message: "Memona backend is running",
+    health: "/api/health",
+  }),
+);
+
+app.get("/favicon.ico", (req, res) => res.status(204).end());
+
 app.get("/api/health", (req, res) =>
   sendSuccess(res, 200, "API is healthy", { status: "ok" }),
 );
