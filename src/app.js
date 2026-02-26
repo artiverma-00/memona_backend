@@ -13,6 +13,7 @@ const interactionRoutes = require("./routes/interactionRoutes");
 const collaborationRoutes = require("./routes/collaborationRoutes");
 const exportRoutes = require("./routes/exportRoutes");
 const activityLogRoutes = require("./routes/activityLogRoutes");
+const voiceReflectionRoutes = require("./routes/voiceReflectionRoutes");
 
 const errorHandler = require("./middlewares/errorHandler");
 const {
@@ -71,6 +72,7 @@ app.use("/api/interactions", interactionRoutes);
 app.use("/api/collaborations", collaborationRoutes);
 app.use("/api/exports", exportRoutes);
 app.use("/api/activity-logs", activityLogRoutes);
+app.use("/api/voice-reflections", voiceReflectionRoutes);
 
 app.use((req, res, next) => {
   next(createHttpError(404, "Route not found"));
